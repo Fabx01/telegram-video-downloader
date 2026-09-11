@@ -150,24 +150,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def read_link_file(path: Path) -> list[tuple[str, str]]:
+def read_link_file(
+    path: Path,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise RuntimeError(f"não foi possível ler {path}: {exc}") from exc
 
-    return [
-        (line.strip(), f"{path}:{line_number}")
-        for line_number, line in enumerate(lines, start=1)
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    active: list[tuple[str, str]] = []
+    paused: list[tuple[str, str]] = []
+    pause_reached = False
+    for line_number, line in enumerate(lines, start=1):
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+
+        directive = value.split("#", maxsplit=1)[0].strip().casefold()
+        if directive == "!pause":
+            pause_reached = True
+            continue
+
+        target = paused if pause_reached else active
+        target.append((value, f"{path}:{line_number}"))
+
+    return active, paused
 
 
-def collect_links(args: argparse.Namespace) -> tuple[list[LinkItem], int, list[Path]]:
+def collect_links(
+    args: argparse.Namespace,
+) -> tuple[list[LinkItem], int, list[Path], int]:
     raw_links = [
         (value, f"argumento {position}")
         for position, value in enumerate(args.links, start=1)
     ]
+    paused_raw_links: list[tuple[str, str]] = []
     files = list(args.links_file)
 
     if not raw_links and not files:
@@ -178,7 +195,8 @@ def collect_links(args: argparse.Namespace) -> tuple[list[LinkItem], int, list[P
             try:
                 links_file.write_text(
                     "# Cole um link de mensagem do Telegram por linha.\n"
-                    "# Linhas vazias e linhas iniciadas com # são ignoradas.\n",
+                    "# Linhas vazias e linhas iniciadas com # são ignoradas.\n"
+                    "# Use !pause para adiar todos os links abaixo dele.\n",
                     encoding="utf-8",
                 )
             except OSError as exc:
@@ -191,9 +209,11 @@ def collect_links(args: argparse.Namespace) -> tuple[list[LinkItem], int, list[P
             )
 
     for path in files:
-        raw_links.extend(read_link_file(path))
+        active_from_file, paused_from_file = read_link_file(path)
+        raw_links.extend(active_from_file)
+        paused_raw_links.extend(paused_from_file)
 
-    if not raw_links:
+    if not raw_links and not paused_raw_links:
         file_names = ", ".join(str(path) for path in files)
         raise ValueError(
             f"nenhum link encontrado em {file_names}. "
@@ -218,9 +238,31 @@ def collect_links(args: argparse.Namespace) -> tuple[list[LinkItem], int, list[P
         seen.add(key)
         items.append(LinkItem(link=link, source=source))
 
-    if not items:
+    paused_count = 0
+    paused_seen = set(seen)
+    for raw_link, source in paused_raw_links:
+        try:
+            link = parse_telegram_link(raw_link)
+        except ValueError as exc:
+            print(
+                f"Aviso: entrada pausada inválida em {source}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+
+        key = (str(link.chat), link.message_id)
+        if key in paused_seen:
+            print(
+                f"Aviso: link pausado duplicado ignorado em {source}",
+                file=sys.stderr,
+            )
+            continue
+        paused_seen.add(key)
+        paused_count += 1
+
+    if not items and not paused_count:
         raise ValueError("nenhum link válido foi encontrado")
-    return items, rejected, files
+    return items, rejected, files, paused_count
 
 
 def load_environment() -> None:
@@ -391,15 +433,21 @@ def main() -> int:
         load_environment()
         parser = build_parser()
         args = parser.parse_args()
-        items, rejected, files = collect_links(args)
+        items, rejected, files, paused = collect_links(args)
         if files:
             print(
-                f"Encontrados {len(items)} link(s) válido(s) "
-                f"em {len(files)} arquivo(s)."
+                f"Encontrados {len(items) + paused} link(s) válido(s) em "
+                f"{len(files)} arquivo(s): {len(items)} na fila e "
+                f"{paused} pausado(s)."
             )
         else:
             print(f"Recebidos {len(items)} link(s) válido(s).")
-        completed, skipped, failed = asyncio.run(download_all(args, items, rejected))
+        if items:
+            completed, skipped, failed = asyncio.run(
+                download_all(args, items, rejected)
+            )
+        else:
+            completed, skipped, failed = 0, 0, rejected
     except (ValueError, RuntimeError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1
@@ -409,7 +457,7 @@ def main() -> int:
 
     print(
         f"Resumo: {completed} baixado(s), {skipped} já existente(s), "
-        f"{failed} falha(s)."
+        f"{paused} pausado(s), {failed} falha(s)."
     )
     return 1 if failed else 0
 

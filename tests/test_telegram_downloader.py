@@ -36,11 +36,12 @@ class TelegramLinkTests(unittest.TestCase):
             )
             args = argparse.Namespace(links=[], links_file=[links_file])
 
-            items, rejected, files = collect_links(args)
+            items, rejected, files, paused = collect_links(args)
 
         self.assertEqual([item.link.message_id for item in items], [101, 102])
         self.assertEqual(rejected, 1)
         self.assertEqual(files, [links_file])
+        self.assertEqual(paused, 0)
 
     def test_creates_default_links_file_when_missing(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -61,6 +62,55 @@ class TelegramLinkTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Adicione um link"):
                 collect_links(args)
+
+    def test_pause_is_independent_for_each_links_file(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            directory = Path(temporary_dir)
+            redes = directory / "redes.txt"
+            logica = directory / "logica.txt"
+            redes.write_text(
+                "https://t.me/c/1234567890/101\n"
+                "!pause # continuar depois\n"
+                "https://t.me/c/1234567890/102\n"
+                "https://t.me/c/1234567890/103\n",
+                encoding="utf-8",
+            )
+            logica.write_text(
+                "https://t.me/c/1234567890/201\n"
+                "https://t.me/c/1234567890/202\n"
+                "https://t.me/c/1234567890/203\n"
+                "https://t.me/c/1234567890/204\n"
+                "!PAUSE\n"
+                "https://t.me/c/1234567890/205\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(links=[], links_file=[redes, logica])
+
+            items, rejected, files, paused = collect_links(args)
+
+        self.assertEqual(
+            [item.link.message_id for item in items],
+            [101, 201, 202, 203, 204],
+        )
+        self.assertEqual(rejected, 0)
+        self.assertEqual(files, [redes, logica])
+        self.assertEqual(paused, 3)
+
+    def test_file_can_pause_all_downloads(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            links_file = Path(temporary_dir) / "links.txt"
+            links_file.write_text(
+                "!pause\nhttps://t.me/c/1234567890/101\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(links=[], links_file=[links_file])
+
+            items, rejected, files, paused = collect_links(args)
+
+        self.assertEqual(items, [])
+        self.assertEqual(rejected, 0)
+        self.assertEqual(files, [links_file])
+        self.assertEqual(paused, 1)
 
     def test_output_name_cannot_escape_download_directory(self):
         message = SimpleNamespace(

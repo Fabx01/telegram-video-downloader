@@ -159,6 +159,35 @@ vazias, comentários e links repetidos, informa quantos links válidos encontrou
 e baixa um vídeo por vez. Se um link falhar, os próximos continuam, e um resumo
 é exibido ao final.
 
+### Controlar a fila com !pause
+
+Para deixar todas as aulas preparadas e baixar somente uma parte da lista,
+coloque `!pause` em uma linha. Os links acima da marcação entram na fila e os
+links abaixo ficam pausados:
+
+```text
+https://t.me/c/1234567890/101
+https://t.me/c/1234567890/102
+https://t.me/c/1234567890/103
+!pause # continuar a partir daqui futuramente
+https://t.me/c/1234567890/104
+https://t.me/c/1234567890/105
+```
+
+Nesse exemplo, as três primeiras aulas são processadas e as duas últimas ficam
+pausadas. Para liberar mais aulas, mova `!pause` para baixo e execute novamente.
+Os arquivos completos serão ignorados e o download continuará pelos próximos.
+
+Cada arquivo possui sua própria marcação. Assim, `links/redes.txt` pode estar
+pausado depois da primeira aula enquanto `links/logica.txt` está pausado depois
+da quarta. Ao processar os dois arquivos, cada fila respeita o seu próprio
+limite. A marcação também aceita letras maiúsculas e um comentário, como
+`!PAUSE # assistir antes de continuar`.
+
+Se `!pause` estiver na primeira linha, nenhum download daquele arquivo será
+iniciado. Se a marcação não existir, todos os links do arquivo serão
+processados.
+
 Também é possível informar uma lista específica:
 
 ```bash
@@ -172,6 +201,9 @@ python telegram_downloader.py \
   --links-file links/modulo_1.txt \
   --links-file links/modulo_2.txt
 ```
+
+Sem `--links-file`, o comando `python telegram_downloader.py` procura todos os
+arquivos `.txt` da pasta `links/` e respeita o `!pause` de cada um.
 
 Mantenha as listas dentro de `links/`, pois essa pasta está no `.gitignore` e
 não será publicada acidentalmente.
