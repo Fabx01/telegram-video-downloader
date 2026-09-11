@@ -1,0 +1,12 @@
+# Credenciais e sessão da conta
+.env
+.env.*
+!.env.example
+*.session
+*.session-*
+.telegram_downloader*
+
+# Ambiente e arquivos gerados localmente
+.venv/
+__pycache__/
+downloads/
