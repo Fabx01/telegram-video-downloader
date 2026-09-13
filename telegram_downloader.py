@@ -7,7 +7,9 @@ import argparse
 import asyncio
 import os
 import re
+import shutil
 import sys
+import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +99,7 @@ class ProgressPrinter:
     def __init__(self, label: str) -> None:
         self.label = label
         self.last_update = 0.0
+        self.last_width = 0
 
     def __call__(self, current: int, total: int) -> None:
         now = time.monotonic()
@@ -104,12 +107,21 @@ class ProgressPrinter:
             return
         self.last_update = now
         percent = current / total * 100 if total else 0
+        line = (
+            f"{self.label} Baixando: {percent:6.2f}% "
+            f"({human_size(current)} / {human_size(total)})"
+        )
         print(
-            f"\r{self.label} Baixando: {percent:6.2f}% "
-            f"({human_size(current)} / {human_size(total)})",
+            "\r" + line.ljust(self.last_width),
             end="",
             flush=True,
         )
+        self.last_width = len(line)
+
+
+def project_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else PROJECT_DIR / path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,15 +147,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-o",
         "--output",
-        type=Path,
-        default=Path("downloads"),
-        help="pasta de destino (padrão: ./downloads)",
+        type=project_path,
+        default=PROJECT_DIR / "downloads",
+        help="pasta de destino (padrão: downloads dentro do projeto)",
     )
     parser.add_argument(
         "--session",
-        type=Path,
-        default=Path(".telegram_downloader"),
-        help="arquivo local da sessão (padrão: ./.telegram_downloader)",
+        type=project_path,
+        default=PROJECT_DIR / ".telegram_downloader",
+        help="arquivo de sessão (padrão: .telegram_downloader dentro do projeto)",
     )
     parser.add_argument("--api-id", type=int, default=os.getenv("TELEGRAM_API_ID"))
     parser.add_argument("--api-hash", default=os.getenv("TELEGRAM_API_HASH"))
@@ -339,25 +351,39 @@ async def download_one(
 
     output_path = output_path_for(message, link, args.output.resolve())
     expected_size = getattr(getattr(message, "file", None), "size", None)
+    partial_path = output_path.with_name(output_path.name + ".part")
     if (
         output_path.is_file()
         and expected_size
         and output_path.stat().st_size == expected_size
     ):
+        partial_path.unlink(missing_ok=True)
         print(f"{label} Já existe, ignorado: {output_path.name}")
         return DownloadResult(path=output_path, skipped=True)
 
+    # Remova arquivos legados comprovadamente incompletos.
+    if output_path.is_file() and expected_size and output_path.stat().st_size < expected_size:
+        output_path.unlink()
+
     chat_title = getattr(entity, "title", link.chat)
     print(f"{label} {chat_title} | mensagem {link.message_id}")
-    result = await client.download_media(
-        message,
-        file=str(output_path),
-        progress_callback=ProgressPrinter(label),
-    )
-    print()
-    if not result:
-        raise RuntimeError("o Telegram não retornou um arquivo para essa mensagem")
-    return DownloadResult(path=Path(result))
+    try:
+        # O stream fixa o nome e reinicia também um .part deixado por queda de energia.
+        with partial_path.open("wb") as stream:
+            result = await client.download_media(
+                message,
+                file=stream,
+                progress_callback=ProgressPrinter(label),
+            )
+        if not result:
+            raise RuntimeError("o Telegram não retornou um arquivo para essa mensagem")
+        if expected_size is not None and partial_path.stat().st_size != expected_size:
+            raise RuntimeError("download incompleto: tamanho diferente do informado pelo Telegram")
+        partial_path.replace(output_path)
+        return DownloadResult(path=output_path)
+    finally:
+        print()
+        partial_path.unlink(missing_ok=True)
 
 
 async def download_all(
@@ -428,20 +454,37 @@ async def download_all(
     return completed, skipped, failed
 
 
+def print_header(args: argparse.Namespace, queued: int, paused: int, files: int) -> None:
+    width = max(24, min(60, shutil.get_terminal_size().columns - 2))
+    inner = width - 4
+    border = "+" + "=" * (width - 2) + "+"
+    destination = args.output.resolve()
+    try:
+        destination_label = str(destination.relative_to(PROJECT_DIR)) + "/"
+    except ValueError:
+        destination_label = str(destination)
+    lines = [
+        "TELEGRAM DOWNLOADER",
+        "",
+        f"Links: {queued + paused}     Na fila: {queued}     Pausados: {paused}",
+        f"Listas: {files}     Destino: {destination_label}",
+        "",
+        "Ctrl+C para cancelar",
+    ]
+    print("\n" + border)
+    for line in lines:
+        for wrapped in textwrap.wrap(line, width=inner) or [""]:
+            print(f"| {wrapped:<{inner}} |")
+    print(border + "\n")
+
+
 def main() -> int:
     try:
         load_environment()
         parser = build_parser()
         args = parser.parse_args()
         items, rejected, files, paused = collect_links(args)
-        if files:
-            print(
-                f"Encontrados {len(items) + paused} link(s) válido(s) em "
-                f"{len(files)} arquivo(s): {len(items)} na fila e "
-                f"{paused} pausado(s)."
-            )
-        else:
-            print(f"Recebidos {len(items)} link(s) válido(s).")
+        print_header(args, len(items), paused, len(files))
         if items:
             completed, skipped, failed = asyncio.run(
                 download_all(args, items, rejected)

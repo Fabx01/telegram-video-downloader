@@ -20,7 +20,6 @@ Tipos de mídia aceitos:
 - GIFs e alguns tipos de arquivos anexados
 
 O script não acessa conversas sem permissão nem remove restrições do Telegram.
-Use-o somente para conteúdo que você tem autorização para baixar.
 
 ## 1. Copiar o link correto
 
@@ -208,23 +207,13 @@ arquivos `.txt` da pasta `links/` e respeita o `!pause` de cada um.
 Mantenha as listas dentro de `links/`, pois essa pasta está no `.gitignore` e
 não será publicada acidentalmente.
 
-## 8. Nomes dos arquivos e retomada
+## 8. Downloads
 
-Todos os downloads são colocados em `downloads` por padrão. Para evitar que
-arquivos com nomes iguais sejam sobrescritos, o script acrescenta o ID da
-conversa e da mensagem antes do nome original fornecido pelo Telegram:
+Os arquivos ficam em `downloads/`. Para salvar em outro local, use
+`--output /caminho/para/videos`.
 
-```text
-chat_1234567890_msg_123_Aula 01.mp4
-```
-
-Esse prefixo também permite relacionar o arquivo à mensagem original. As pastas
-`downloads` e `links` são locais e estão ignoradas pelo Git.
-
-Ao executar novamente um link ou uma fila, o script compara o tamanho do
-arquivo existente com o tamanho informado pelo Telegram. Arquivos completos são
-ignorados e os demais links continuam normalmente, permitindo retomar uma fila
-interrompida.
+Para cancelar, pressione **Ctrl+C**. Execute o mesmo comando para continuar
+a fila: arquivos completos são ignorados e os incompletos recomeçam do zero.
 
 ## Problemas comuns
 
@@ -247,6 +236,3 @@ Não compartilhe o `api_hash`, códigos de login, senha de verificação em duas
 etapas, arquivo `.env` ou arquivo `.telegram_downloader.session`. Quem obtiver
 o arquivo de sessão pode conseguir acessar sua conta. Para encerrar sessões que
 você não reconhece, use **Configurações > Dispositivos** no Telegram.
-
-O `.gitignore` impede que sejam enviados ao Git o `.env`, a `.venv`, os arquivos
-de sessão (`*.session` e arquivos auxiliares).

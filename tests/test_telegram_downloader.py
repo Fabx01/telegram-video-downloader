@@ -1,11 +1,13 @@
 import argparse
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from telegram_downloader import collect_links, output_path_for, parse_telegram_link
+from telegram_downloader import build_parser, PROJECT_DIR, download_one, LinkItem
 
 
 class TelegramLinkTests(unittest.TestCase):
@@ -124,6 +126,68 @@ class TelegramLinkTests(unittest.TestCase):
             output,
             Path("downloads/chat_1234567890_msg_123_Aula 01.mp4"),
         )
+
+
+class DownloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_paths_are_anchored_to_project(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.output, PROJECT_DIR / "downloads")
+        self.assertEqual(args.session, PROJECT_DIR / ".telegram_downloader")
+        args = build_parser().parse_args(["--output", "videos", "--session", "sessions/test"])
+        self.assertEqual(args.output, PROJECT_DIR / "videos")
+        self.assertEqual(args.session, PROJECT_DIR / "sessions/test")
+
+    async def test_partial_files_are_replaced_or_removed(self):
+        for outcome in ("success", "failure", "cancel", "truncated"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
+                args = argparse.Namespace(output=Path(tmp))
+                link = parse_telegram_link("https://t.me/example/123")
+                item = LinkItem(link, "test")
+                message = SimpleNamespace(media=True, file=SimpleNamespace(name="video.mp4", size=4, ext=".mp4"))
+                destination = output_path_for(message, link, args.output)
+                partial = destination.with_name(destination.name + ".part")
+                destination.write_bytes(b"old")
+                partial.write_bytes(b"stale partial data")
+                client = SimpleNamespace(get_messages=AsyncMock(return_value=message))
+
+                async def transfer(message, file, progress_callback):
+                    self.assertFalse(destination.exists())
+                    file.write(b"done" if outcome == "success" else b"x")
+                    if outcome == "failure":
+                        raise OSError("connection lost")
+                    if outcome == "cancel":
+                        raise asyncio.CancelledError()
+                    return file
+
+                client.download_media = AsyncMock(side_effect=transfer)
+                with patch("telegram_downloader.resolve_entity", new=AsyncMock(return_value=SimpleNamespace(title="Test"))):
+                    if outcome == "success":
+                        result = await download_one(client, args, item, 1, 1, {})
+                        self.assertEqual(result.path, destination)
+                        self.assertEqual(destination.read_bytes(), b"done")
+                    else:
+                        error = {"failure": OSError, "cancel": asyncio.CancelledError, "truncated": RuntimeError}[outcome]
+                        with self.assertRaises(error):
+                            await download_one(client, args, item, 1, 1, {})
+                        self.assertFalse(destination.exists())
+                self.assertFalse(partial.exists())
+
+    async def test_complete_file_is_kept_and_stale_partial_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(output=Path(tmp))
+            link = parse_telegram_link("https://t.me/example/123")
+            message = SimpleNamespace(media=True, file=SimpleNamespace(name="video.mp4", size=4, ext=".mp4"))
+            destination = output_path_for(message, link, args.output)
+            partial = destination.with_name(destination.name + ".part")
+            destination.write_bytes(b"done")
+            partial.write_bytes(b"x")
+            client = SimpleNamespace(get_messages=AsyncMock(return_value=message), download_media=AsyncMock())
+            with patch("telegram_downloader.resolve_entity", new=AsyncMock(return_value=SimpleNamespace(title="Test"))):
+                result = await download_one(client, args, LinkItem(link, "test"), 1, 1, {})
+            self.assertTrue(result.skipped)
+            self.assertEqual(destination.read_bytes(), b"done")
+            self.assertFalse(partial.exists())
+            client.download_media.assert_not_called()
 
 
 if __name__ == "__main__":
